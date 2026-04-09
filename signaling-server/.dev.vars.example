@@ -1,0 +1,17 @@
+﻿# Signaling worker local env file (signaling-server/.dev.vars)
+# Used by `wrangler dev` only.
+
+# Required: Cloudflare Realtime TURN key + API token.
+TURN_KEY_ID=
+TURN_API_TOKEN=
+
+# Required: short-lived TURN credential TTL (seconds).
+TURN_CREDENTIAL_TTL_SECONDS=3600
+
+# Required: exact allowed frontend origins (comma-separated).
+# Local + production example:
+TURN_ALLOWED_ORIGINS=http://localhost:5173
+
+# Optional overrides (defaults are built in if omitted).
+# TURN_STUN_URL=stun:stun.cloudflare.com:3478
+# TURN_URLS=turn:turn.cloudflare.com:3478?transport=udp,turn:turn.cloudflare.com:3478?transport=tcp,turns:turn.cloudflare.com:5349?transport=tcp,turn:turn.cloudflare.com:53?transport=udp,turn:turn.cloudflare.com:80?transport=tcp,turns:turn.cloudflare.com:443?transport=tcp

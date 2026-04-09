@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npm run build && npx wrangler pages deploy dist --project-name p2p-chat --branch production",
+    "deploy:preview": "npm run build && npx wrangler pages deploy dist --project-name p2p-chat"
   },
   "dependencies": {
     "react": "^18.3.1",

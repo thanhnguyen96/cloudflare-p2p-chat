@@ -9,6 +9,9 @@ signaling-server/dist/
 .env
 .env.*
 !.env.example
+signaling-server/.dev.vars
+signaling-server/.dev.vars.*
+!signaling-server/.dev.vars.example
 
 # Cloudflare local state
 .wrangler/

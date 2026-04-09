@@ -26,6 +26,12 @@ interface SignalingMessage {
   role?: "caller" | "callee";
 }
 
+interface TurnCredentialResponse {
+  iceServers: RTCIceServer[];
+  expiresAt: string;
+  ttlSeconds: number;
+}
+
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
   idle: "Idle",
   connecting: "Connecting...",
@@ -84,6 +90,10 @@ function App() {
   const localDisplayNameRef = useRef(localDisplayName);
   const isConnectedRef = useRef(isConnected);
   const hasCustomDisplayNameRef = useRef(false);
+  const activeIceServersRef = useRef<RTCIceServer[]>(appConfig.iceServers);
+  const turnCredentialExpiresAtRef = useRef<number | null>(null);
+  const turnRefreshTimeoutRef = useRef<number | null>(null);
+  const turnRefreshInFlightRef = useRef(false);
 
   useEffect(() => {
     localDisplayNameRef.current = localDisplayName;
@@ -105,6 +115,9 @@ function App() {
 
   useEffect(() => {
     return () => {
+      if (turnRefreshTimeoutRef.current !== null) {
+        window.clearTimeout(turnRefreshTimeoutRef.current);
+      }
       signalingSocketRef.current?.close();
       dataChannelRef.current?.close();
       peerConnectionRef.current?.close();
@@ -140,10 +153,155 @@ function App() {
     ]);
   };
 
+  const clearTurnCredentialRefreshTimer = (): void => {
+    if (turnRefreshTimeoutRef.current !== null) {
+      window.clearTimeout(turnRefreshTimeoutRef.current);
+      turnRefreshTimeoutRef.current = null;
+    }
+  };
+
+  const applyIceServers = (iceServers: RTCIceServer[]): void => {
+    if (iceServers.length === 0) {
+      return;
+    }
+
+    activeIceServersRef.current = iceServers;
+    const peerConnection = peerConnectionRef.current;
+    if (peerConnection) {
+      peerConnection.setConfiguration({ iceServers });
+    }
+  };
+
+  const fetchTurnCredential = async (): Promise<TurnCredentialResponse | null> => {
+    if (!appConfig.turnCredentialEndpoint) {
+      return null;
+    }
+
+    const response = await fetch(appConfig.turnCredentialEndpoint, {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error(`TURN endpoint returned ${response.status}`);
+    }
+
+    const payload = (await response.json()) as Partial<TurnCredentialResponse>;
+    if (!Array.isArray(payload.iceServers) || payload.iceServers.length === 0) {
+      throw new Error("TURN endpoint returned invalid iceServers payload");
+    }
+
+    const ttlSeconds =
+      typeof payload.ttlSeconds === "number" && payload.ttlSeconds > 0
+        ? payload.ttlSeconds
+        : appConfig.turnCredentialTtlSeconds;
+
+    const expiresAt =
+      typeof payload.expiresAt === "string" && payload.expiresAt
+        ? payload.expiresAt
+        : new Date(Date.now() + ttlSeconds * 1000).toISOString();
+
+    return {
+      iceServers: payload.iceServers as RTCIceServer[],
+      expiresAt,
+      ttlSeconds,
+    };
+  };
+
+  async function runScheduledTurnCredentialRefresh(): Promise<void> {
+    try {
+      await refreshTurnCredential("scheduled");
+      appendMessage("System", "TURN credential refreshed for another 1 hour.", "system");
+    } catch {
+      appendMessage(
+        "System",
+        "Failed to refresh TURN credential. Retrying in 60 seconds.",
+        "error"
+      );
+      turnRefreshTimeoutRef.current = window.setTimeout(() => {
+        void runScheduledTurnCredentialRefresh();
+      }, 60_000);
+    }
+  }
+
+  function scheduleTurnCredentialRefresh(): void {
+    clearTurnCredentialRefreshTimer();
+
+    const expiresAt = turnCredentialExpiresAtRef.current;
+    if (!expiresAt) {
+      return;
+    }
+
+    const refreshLeadMs = 5 * 60 * 1000;
+    const minimumDelayMs = 15 * 1000;
+    const delayMs = Math.max(expiresAt - Date.now() - refreshLeadMs, minimumDelayMs);
+
+    turnRefreshTimeoutRef.current = window.setTimeout(() => {
+      void runScheduledTurnCredentialRefresh();
+    }, delayMs);
+  }
+
+  const restartIceAfterTurnRefresh = async (): Promise<void> => {
+    const peerConnection = peerConnectionRef.current;
+    const socket = signalingSocketRef.current;
+
+    if (
+      !peerConnection ||
+      !socket ||
+      socket.readyState !== WebSocket.OPEN ||
+      !isConnectedRef.current ||
+      peerConnection.signalingState !== "stable"
+    ) {
+      return;
+    }
+
+    const restartOffer = await peerConnection.createOffer({ iceRestart: true });
+    await peerConnection.setLocalDescription(restartOffer);
+    socket.send(JSON.stringify({ offer: peerConnection.localDescription }));
+  };
+
+  async function refreshTurnCredential(
+    reason: "connect" | "scheduled"
+  ): Promise<void> {
+    if (!appConfig.turnCredentialEndpoint || turnRefreshInFlightRef.current) {
+      return;
+    }
+
+    turnRefreshInFlightRef.current = true;
+
+    try {
+      const turnCredential = await fetchTurnCredential();
+      if (!turnCredential) {
+        return;
+      }
+
+      applyIceServers(turnCredential.iceServers);
+
+      const parsedExpiresAt = Date.parse(turnCredential.expiresAt);
+      turnCredentialExpiresAtRef.current = Number.isFinite(parsedExpiresAt)
+        ? parsedExpiresAt
+        : Date.now() + turnCredential.ttlSeconds * 1000;
+
+      scheduleTurnCredentialRefresh();
+
+      if (reason === "scheduled" && peerConnectionRef.current) {
+        peerConnectionRef.current.setConfiguration({
+          iceServers: activeIceServersRef.current,
+        });
+        await restartIceAfterTurnRefresh();
+      }
+    } finally {
+      turnRefreshInFlightRef.current = false;
+    }
+  }
+
   const closeConnections = (): void => {
     const socket = signalingSocketRef.current;
     const channel = dataChannelRef.current;
     const peerConnection = peerConnectionRef.current;
+
+    clearTurnCredentialRefreshTimer();
+    turnCredentialExpiresAtRef.current = null;
 
     if (socket) {
       socket.onopen = null;
@@ -172,6 +330,7 @@ function App() {
     dataChannelRef.current = null;
     peerConnectionRef.current = null;
     isCallerRef.current = false;
+    activeIceServersRef.current = appConfig.iceServers;
   };
 
   const resetConnectionState = (
@@ -238,7 +397,7 @@ function App() {
     }
 
     const peerConnection = new RTCPeerConnection({
-      iceServers: appConfig.iceServers,
+      iceServers: activeIceServersRef.current,
     });
 
     peerConnection.onicecandidate = (event) => {
@@ -361,7 +520,9 @@ function App() {
     };
   };
 
-  const handleConnectSubmit = (event: FormEvent<HTMLFormElement>): void => {
+  const handleConnectSubmit = async (
+    event: FormEvent<HTMLFormElement>
+  ): Promise<void> => {
     event.preventDefault();
     closeConnections();
 
@@ -396,6 +557,18 @@ function App() {
 
     setMessages([]);
     updateSystemNotice(`Connecting to room ${roomId} as ${resolvedDisplayName}...`);
+
+    if (appConfig.turnCredentialEndpoint) {
+      try {
+        await refreshTurnCredential("connect");
+      } catch {
+        appendMessage(
+          "System",
+          "Could not fetch 1-hour TURN credential. Continuing with fallback ICE settings.",
+          "error"
+        );
+      }
+    }
 
     connectToSignaling(roomId);
   };
@@ -456,78 +629,85 @@ function App() {
     status === "connecting" || status === "waiting" || isConnected;
   const canDisconnect =
     status === "connecting" || status === "waiting" || isConnected;
+  const isImmersiveMode = isConnected;
 
   return (
-    <div className="chat-app">
+    <div className={`chat-app ${isImmersiveMode ? "chat-app--immersive" : ""}`}>
       <main className="chat-app__shell">
-        <header className="chat-app__header">
-          <h1 className="chat-app__title">P2P Chat</h1>
-        </header>
+        {!isImmersiveMode && (
+          <header className="chat-app__header">
+            <h1 className="chat-app__title">P2P Chat</h1>
+          </header>
+        )}
 
-        <section className="chat-app__status status-panel">
-          <div className="status-panel__left">
-            <span className={statusDotClassName} aria-hidden="true" />
-            <span className="status-panel__label">{STATUS_LABELS[status]}</span>
-          </div>
-          <p className="status-panel__room">
-            {activeRoom ? `Room: ${activeRoom}` : "Room: not connected"}
-          </p>
-        </section>
-
-        <section className="chat-app__connect">
-          <form className="join-form" onSubmit={handleConnectSubmit}>
-            <label className="form-field" htmlFor="display-name">
-              <span className="form-field__label">Display Name (optional)</span>
-              <input
-                id="display-name"
-                className="form-field__input"
-                value={displayNameInput}
-                onChange={(event) => setDisplayNameInput(event.target.value)}
-                placeholder={`Default: ${appConfig.defaultDisplayName}`}
-                disabled={controlsLocked}
-                maxLength={32}
-              />
-            </label>
-
-            <label className="form-field form-field--room" htmlFor="room-id">
-              <span className="form-field__label">Room ID</span>
-              <input
-                id="room-id"
-                className="form-field__input"
-                value={roomInput}
-                onChange={(event) => setRoomInput(event.target.value)}
-                placeholder="Enter a room ID to join or create"
-                disabled={controlsLocked}
-                maxLength={64}
-              />
-            </label>
-
-            <div className="join-form__actions">
-              <button
-                type="submit"
-                className="button button--primary"
-                disabled={controlsLocked}
-              >
-                {status === "connecting" ? "Connecting..." : "Connect"}
-              </button>
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={handleCopyRoom}
-              >
-                {copyLabel}
-              </button>
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={handleDisconnect}
-                disabled={!canDisconnect}
-              >
-                Disconnect
-              </button>
+        {!isImmersiveMode && (
+          <section className="chat-app__status status-panel">
+            <div className="status-panel__left">
+              <span className={statusDotClassName} aria-hidden="true" />
+              <span className="status-panel__label">{STATUS_LABELS[status]}</span>
             </div>
-          </form>
-        </section>
+            <p className="status-panel__room">
+              {activeRoom ? `Room: ${activeRoom}` : "Room: not connected"}
+            </p>
+          </section>
+        )}
+
+        {!isImmersiveMode && (
+          <section className="chat-app__connect">
+            <form className="join-form" onSubmit={handleConnectSubmit}>
+              <label className="form-field" htmlFor="display-name">
+                <span className="form-field__label">Display Name (optional)</span>
+                <input
+                  id="display-name"
+                  className="form-field__input"
+                  value={displayNameInput}
+                  onChange={(event) => setDisplayNameInput(event.target.value)}
+                  placeholder={`Default: ${appConfig.defaultDisplayName}`}
+                  disabled={controlsLocked}
+                  maxLength={32}
+                />
+              </label>
+
+              <label className="form-field form-field--room" htmlFor="room-id">
+                <span className="form-field__label">Room ID</span>
+                <input
+                  id="room-id"
+                  className="form-field__input"
+                  value={roomInput}
+                  onChange={(event) => setRoomInput(event.target.value)}
+                  placeholder="Enter a room ID to join or create"
+                  disabled={controlsLocked}
+                  maxLength={64}
+                />
+              </label>
+
+              <div className="join-form__actions">
+                <button
+                  type="submit"
+                  className="button button--primary"
+                  disabled={controlsLocked}
+                >
+                  {status === "connecting" ? "Connecting..." : "Connect"}
+                </button>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={handleCopyRoom}
+                >
+                  {copyLabel}
+                </button>
+                <button
+                  type="button"
+                  className="button button--danger"
+                  onClick={handleDisconnect}
+                  disabled={!canDisconnect}
+                >
+                  Disconnect
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
 
         <section
           className={`chat-app__system system-log system-log--${systemNotice.type}`}
@@ -567,13 +747,24 @@ function App() {
             disabled={!isConnected}
             maxLength={1024}
           />
-          <button
-            type="submit"
-            className="button button--accent composer__button"
-            disabled={!isConnected || messageInput.trim().length === 0}
-          >
-            Send
-          </button>
+          <div className="composer__actions">
+            <button
+              type="submit"
+              className="button button--accent composer__button"
+              disabled={!isConnected || messageInput.trim().length === 0}
+            >
+              Send
+            </button>
+            {isImmersiveMode && (
+              <button
+                type="button"
+                className="button button--danger composer__button"
+                onClick={handleDisconnect}
+              >
+                Disconnect
+              </button>
+            )}
+          </div>
         </form>
       </main>
     </div>

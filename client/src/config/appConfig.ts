@@ -5,6 +5,7 @@
 }
 
 const DEFAULT_STUN_URL = "stun:stun.cloudflare.com:3478";
+const DEFAULT_TURN_TTL_SECONDS = 3600;
 const DEFAULT_TURN_URLS = [
   "turn:turn.cloudflare.com:3478?transport=udp",
   "turn:turn.cloudflare.com:3478?transport=tcp",
@@ -21,6 +22,17 @@ const parseCsv = (input: string | undefined): string[] =>
     .filter(Boolean);
 
 const readEnv = (value: string | undefined): string => value?.trim() ?? "";
+const readPositiveInt = (value: string | undefined): number | null => {
+  const parsed = Number.parseInt(readEnv(value), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const trimTrailingSlash = (value: string): string =>
+  value.endsWith("/") ? value.slice(0, -1) : value;
 
 const signalingServerUrl = readEnv(import.meta.env.VITE_SIGNALING_SERVER_URL);
 const defaultDisplayName =
@@ -41,8 +53,20 @@ if (turnUsername && turnCredential) {
   });
 }
 
+const signalingHttpBaseUrl = trimTrailingSlash(
+  signalingServerUrl.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:")
+);
+const turnCredentialEndpoint = signalingHttpBaseUrl
+  ? `${signalingHttpBaseUrl}/api/turn-credentials`
+  : "";
+const turnCredentialTtlSeconds =
+  readPositiveInt(import.meta.env.VITE_TURN_CREDENTIAL_TTL_SECONDS) ??
+  DEFAULT_TURN_TTL_SECONDS;
+
 export const appConfig = {
   signalingServerUrl,
   defaultDisplayName,
   iceServers,
+  turnCredentialEndpoint,
+  turnCredentialTtlSeconds,
 };

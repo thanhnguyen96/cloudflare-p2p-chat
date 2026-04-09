@@ -1,57 +1,18 @@
-﻿# P2P Chat (React + TypeScript + Cloudflare)
+﻿# P2P Chat
 
 [Đọc bản tiếng Việt](./README.vi.md)
 
-This project is a two-peer WebRTC chat application with a Cloudflare Durable Object signaling server.
+WebRTC 1-1 chat app with Cloudflare Durable Object signaling and short-lived TURN credentials.
 
-## What was refactored
+## Stack
 
-- Frontend moved from plain JavaScript to **React + TypeScript**.
-- Styling moved from CSS/Tailwind mix to **SCSS with BEM naming**.
-- Responsive UI was redesigned for desktop, tablet, and mobile.
-- Users can set a **display name before joining**; if empty, a default name is used.
-- Sensitive values were centralized into one file: **`/.env`**.
-- Added **`/.env.example`** with English instructions for getting Cloudflare values.
-- Added project-level **`.gitignore`**.
-- Added bilingual setup/deploy docs (`README.md`, `README.vi.md`).
+- Frontend: React + TypeScript + Vite
+- Signaling: Cloudflare Worker + Durable Object
+- TURN: Cloudflare Realtime TURN API (credentials issued by backend)
 
-## Project structure
+## Quick Start (Local)
 
-```text
-.
-|- .env.example
-|- client/
-|  |- src/
-|  |  |- App.tsx
-|  |  |- config/appConfig.ts
-|  |  |- styles/main.scss
-|  |  |- main.tsx
-|  |- package.json
-|  |- vite.config.ts
-|- signaling-server/
-|  |- src/worker.ts
-|  |- wrangler.toml
-|  |- package.json
-```
-
-## Prerequisites
-
-Install these before setup:
-
-- Node.js 20+ (LTS recommended)
-- npm 10+
-- Cloudflare account
-- Wrangler CLI (installed via project dependencies)
-
-## Setup
-
-### 1. Configure secrets
-
-1. Copy `.env.example` to `.env` at repository root.
-2. Fill all required values in `.env`.
-3. Do not commit `.env`.
-
-### 2. Install dependencies
+1. Install dependencies.
 
 ```bash
 cd signaling-server
@@ -61,88 +22,101 @@ cd ../client
 npm install
 ```
 
-### 3. Run locally (2 terminals)
+2. Configure frontend env.
 
-Terminal A (signaling server):
+```bash
+cp .env.example .env
+```
+
+Required in `.env`:
+
+- `VITE_SIGNALING_SERVER_URL`
+- `VITE_DEFAULT_DISPLAY_NAME` (optional, default `Guest`)
+
+3. Configure signaling worker env.
+
+```bash
+cd signaling-server
+cp .dev.vars.example .dev.vars
+```
+
+Required in `signaling-server/.dev.vars`:
+
+- `TURN_KEY_ID`
+- `TURN_API_TOKEN`
+- `TURN_CREDENTIAL_TTL_SECONDS=3600`
+- `TURN_ALLOWED_ORIGINS=http://localhost:5173,https://p2p-chat-awp.pages.dev`
+
+4. Run local dev (2 terminals).
+
+Terminal A:
 
 ```bash
 cd signaling-server
 npm run dev
 ```
 
-Terminal B (React app):
+Terminal B:
 
 ```bash
 cd client
 npm run dev
 ```
 
-Open the Vite URL shown in terminal B.
+## TURN Flow
 
-## Display name behavior
+- Frontend calls `GET /api/turn-credentials` before WebRTC connection.
+- Worker generates TURN credentials with TTL (default `3600s`).
+- Frontend refreshes credentials before expiry.
+- Worker only serves this endpoint when `Origin` is in `TURN_ALLOWED_ORIGINS`.
 
-- Field: `Display Name (optional)`.
-- If user leaves it empty, the app uses `VITE_DEFAULT_DISPLAY_NAME` (default `Guest`).
+## Deploy
 
-## Deploy to Cloudflare
-
-### 1. Deploy signaling worker
+### Signaling Worker
 
 ```bash
 cd signaling-server
 npm run deploy
 ```
 
-After deploy, copy the final Worker URL and set it in:
+### Frontend (Cloudflare Pages)
 
-- `.env` -> `VITE_SIGNALING_SERVER_URL` (for local)
-- Cloudflare Pages env var `VITE_SIGNALING_SERVER_URL` (for production frontend)
-
-### 2. Deploy frontend (Cloudflare Pages)
-
-### Option A: Cloudflare Dashboard (Git integration)
-
-- Build command: `npm run build`
-- Build output directory: `dist`
-- Root directory: `client`
-- Add Environment Variables in Pages project settings:
-  - `VITE_SIGNALING_SERVER_URL`
-  - `VITE_DEFAULT_DISPLAY_NAME`
-  - `VITE_STUN_URL`
-  - `VITE_TURN_URLS`
-  - `VITE_TURN_USERNAME`
-  - `VITE_TURN_CREDENTIAL`
-
-### Option B: Wrangler Pages CLI
+From `client`:
 
 ```bash
-cd client
-npm run build
-npx wrangler pages deploy dist --project-name <your-pages-project-name>
+npm run deploy
 ```
 
-If your pipeline is non-interactive, export:
+Scripts:
+
+- `npm run deploy`: build + deploy to Pages production branch (`production`)
+- `npm run deploy:preview`: build + deploy preview
+
+## Environment Files
+
+- `/.env`: frontend Vite variables only (`VITE_*`)
+- `/signaling-server/.dev.vars`: worker local variables only (`TURN_*`)
+
+Do not put worker secrets in `.env`.
+
+## CI / Non-Interactive Deploy
+
+Export these in shell/CI (not in `.env`):
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-## Cloudflare secret checklist
+## Common Issues
 
-| Variable | Used by | Where to get it |
-|---|---|---|
-| `VITE_SIGNALING_SERVER_URL` | React client | Output of `wrangler deploy` for signaling worker |
-| `VITE_TURN_USERNAME` | React client | Cloudflare Realtime TURN credentials |
-| `VITE_TURN_CREDENTIAL` | React client | Cloudflare Realtime TURN credentials |
-| `CLOUDFLARE_ACCOUNT_ID` | CI / CLI deploy | Cloudflare account overview |
-| `CLOUDFLARE_API_TOKEN` | CI / CLI deploy | Cloudflare API Tokens page |
+- `403` on `/api/turn-credentials`
+  Cause: request `Origin` is not in `TURN_ALLOWED_ORIGINS`.
+- `500` with `Missing TURN_KEY_ID or TURN_API_TOKEN`
+  Cause: worker secrets are not set in production.
+- Production UI not updated after deploy
+  Cause: deployed to preview branch instead of `production`, or browser cache.
 
-Guides referenced in `.env.example`:
+## References
 
+- TURN docs: <https://developers.cloudflare.com/realtime/turn/>
 - Find account ID: <https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
 - Create API token: <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/>
-- TURN docs entry: <https://developers.cloudflare.com/realtime/turn/>
-
-## Notes
-
-- TURN credentials are sensitive. Keep them only in `.env` / Cloudflare environment variables.
-- For production, consider generating short-lived TURN credentials server-side instead of static frontend env values.
