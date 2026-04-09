@@ -10,6 +10,12 @@ WebRTC 1-1 chat app with Cloudflare Durable Object signaling and short-lived TUR
 - Signaling: Cloudflare Worker + Durable Object
 - TURN: Cloudflare Realtime TURN API (credentials issued by backend)
 
+## Features
+
+- 1-1 real-time text chat over WebRTC data channel
+- File sending over WebRTC data channel (max `1 GB` per file)
+- TURN credentials with 1-hour TTL and automatic refresh
+
 ## Quick Start (Local)
 
 1. Install dependencies.
@@ -120,3 +126,4 @@ Export these in shell/CI (not in `.env`):
 - TURN docs: <https://developers.cloudflare.com/realtime/turn/>
 - Find account ID: <https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
 - Create API token: <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/>
+

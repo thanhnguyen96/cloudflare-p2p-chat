@@ -1,67 +1,37 @@
-﻿import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+﻿import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { appConfig, type ChatPayload } from "./config/appConfig";
-
-type ConnectionStatus = "idle" | "connecting" | "waiting" | "online" | "error";
-type MessageType = "local" | "remote" | "system" | "error";
-
-interface ChatMessage {
-  id: string;
-  sender: string;
-  text: string;
-  type: MessageType;
-  createdAt: string;
-}
-
-interface SystemNotice {
-  text: string;
-  type: "system" | "error";
-  updatedAt: string;
-}
-
-interface SignalingMessage {
-  offer?: RTCSessionDescriptionInit;
-  answer?: RTCSessionDescriptionInit;
-  iceCandidate?: RTCIceCandidateInit;
-  type?: string;
-  role?: "caller" | "callee";
-}
-
-interface TurnCredentialResponse {
-  iceServers: RTCIceServer[];
-  expiresAt: string;
-  ttlSeconds: number;
-}
-
-const STATUS_LABELS: Record<ConnectionStatus, string> = {
-  idle: "Idle",
-  connecting: "Connecting...",
-  waiting: "Waiting for peer...",
-  online: "Online",
-  error: "Connection error",
-};
-
-const createMessageId = (): string => {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-};
-
-const parseChatPayload = (rawData: string): ChatPayload | null => {
-  try {
-    const parsed = JSON.parse(rawData) as Partial<ChatPayload>;
-    if (parsed.type === "chat" && typeof parsed.text === "string") {
-      return {
-        type: "chat",
-        sender: typeof parsed.sender === "string" ? parsed.sender : "Peer",
-        text: parsed.text,
-      };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-};
+import {
+  DATA_CHANNEL_BUFFER_LIMIT,
+  FILE_CHUNK_SIZE_BYTES,
+  MAX_FILE_SIZE_BYTES,
+  STATUS_LABELS,
+} from "./features/chat/constants";
+import {
+  type ChatAttachment,
+  type ChatMessage,
+  type ConnectionStatus,
+  type FileChunkPayload,
+  type FileEndPayload,
+  type FileMetaPayload,
+  type IncomingFileTransfer,
+  type MessageType,
+  type SignalingMessage,
+  type SystemNotice,
+  type TurnCredentialResponse,
+} from "./features/chat/types";
+import {
+  arrayBufferToBase64,
+  base64ToArrayBuffer,
+  createMessageId,
+  formatFileSize,
+  parseDataChannelPayload,
+  waitForDataChannelDrain,
+} from "./features/chat/utils";
+import { Composer } from "./features/chat/components/Composer";
+import { ConnectPanel } from "./features/chat/components/ConnectPanel";
+import { MessagesPanel } from "./features/chat/components/MessagesPanel";
+import { StatusPanel } from "./features/chat/components/StatusPanel";
+import { SystemLogPanel } from "./features/chat/components/SystemLogPanel";
 
 function App() {
   const [displayNameInput, setDisplayNameInput] = useState("");
@@ -79,12 +49,15 @@ function App() {
     updatedAt: new Date().toLocaleTimeString(),
   });
   const [isConnected, setIsConnected] = useState(false);
+  const [isSendingFile, setIsSendingFile] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy room ID");
 
   const messagesViewportRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const signalingSocketRef = useRef<WebSocket | null>(null);
+  const incomingFilesRef = useRef<Map<string, IncomingFileTransfer>>(new Map());
   const isCallerRef = useRef(false);
   const isResettingRef = useRef(false);
   const localDisplayNameRef = useRef(localDisplayName);
@@ -107,6 +80,7 @@ function App() {
     if (!messagesViewportRef.current) {
       return;
     }
+
     messagesViewportRef.current.scrollTo({
       top: messagesViewportRef.current.scrollHeight,
       behavior: "smooth",
@@ -135,7 +109,12 @@ function App() {
     });
   };
 
-  const appendMessage = (sender: string, text: string, type: MessageType): void => {
+  const appendMessage = (
+    sender: string,
+    text: string,
+    type: MessageType,
+    attachment?: ChatAttachment
+  ): void => {
     if (type === "system" || type === "error") {
       updateSystemNotice(text, type);
       return;
@@ -149,6 +128,7 @@ function App() {
         text,
         type,
         createdAt: new Date().toLocaleTimeString(),
+        attachment,
       },
     ]);
   };
@@ -302,6 +282,11 @@ function App() {
 
     clearTurnCredentialRefreshTimer();
     turnCredentialExpiresAtRef.current = null;
+    incomingFilesRef.current.clear();
+    setIsSendingFile(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
 
     if (socket) {
       socket.onopen = null;
@@ -355,8 +340,70 @@ function App() {
     }, 0);
   };
 
+  const handleIncomingFileTransfer = (
+    payload: FileMetaPayload | FileChunkPayload | FileEndPayload
+  ): void => {
+    if (payload.type === "file-meta") {
+      incomingFilesRef.current.set(payload.fileId, {
+        sender: payload.sender,
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
+        mimeType: payload.mimeType,
+        chunks: [],
+      });
+
+      appendMessage(
+        "System",
+        `${payload.sender} is sending ${payload.fileName} (${formatFileSize(
+          payload.fileSize
+        )}).`,
+        "system"
+      );
+      return;
+    }
+
+    if (payload.type === "file-chunk") {
+      const transfer = incomingFilesRef.current.get(payload.fileId);
+      if (!transfer) {
+        return;
+      }
+
+      transfer.chunks.push(base64ToArrayBuffer(payload.chunkBase64));
+      return;
+    }
+
+    const completedTransfer = incomingFilesRef.current.get(payload.fileId);
+    if (!completedTransfer) {
+      return;
+    }
+
+    incomingFilesRef.current.delete(payload.fileId);
+
+    try {
+      const blob = new Blob(completedTransfer.chunks, {
+        type: completedTransfer.mimeType || "application/octet-stream",
+      });
+      const fileUrl = URL.createObjectURL(blob);
+
+      appendMessage(
+        completedTransfer.sender,
+        `Sent a file: ${completedTransfer.fileName}`,
+        "remote",
+        {
+          fileName: completedTransfer.fileName,
+          fileSize: completedTransfer.fileSize,
+          fileUrl,
+          mimeType: completedTransfer.mimeType,
+        }
+      );
+    } catch {
+      appendMessage("System", "Could not decode received file.", "error");
+    }
+  };
+
   const setupDataChannel = (channel: RTCDataChannel): void => {
     dataChannelRef.current = channel;
+    channel.bufferedAmountLowThreshold = Math.floor(DATA_CHANNEL_BUFFER_LIMIT / 2);
 
     channel.onopen = () => {
       setIsConnected(true);
@@ -370,13 +417,18 @@ function App() {
 
     channel.onmessage = (event) => {
       const rawData = typeof event.data === "string" ? event.data : "";
-      const payload = parseChatPayload(rawData);
-      if (payload) {
+      const payload = parseDataChannelPayload(rawData);
+      if (!payload) {
+        appendMessage("Peer", rawData || "[Unsupported message payload]", "remote");
+        return;
+      }
+
+      if (payload.type === "chat") {
         appendMessage(payload.sender ?? "Peer", payload.text, "remote");
         return;
       }
 
-      appendMessage("Peer", rawData || "[Unsupported message payload]", "remote");
+      handleIncomingFileTransfer(payload);
     };
 
     channel.onerror = () => {
@@ -602,6 +654,106 @@ function App() {
     setMessageInput("");
   };
 
+  const sendFile = async (file: File): Promise<void> => {
+    const channel = dataChannelRef.current;
+    if (!channel || channel.readyState !== "open") {
+      appendMessage("System", "Data channel is not ready.", "error");
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      appendMessage(
+        "System",
+        `File is too large. Max allowed is ${formatFileSize(MAX_FILE_SIZE_BYTES)}.`,
+        "error"
+      );
+      return;
+    }
+
+    setIsSendingFile(true);
+    const fileId = createMessageId();
+
+    try {
+      const payload: FileMetaPayload = {
+        type: "file-meta",
+        fileId,
+        sender: localDisplayNameRef.current,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type || "application/octet-stream",
+      };
+      channel.send(JSON.stringify(payload));
+
+      for (
+        let offset = 0;
+        offset < file.size;
+        offset += FILE_CHUNK_SIZE_BYTES
+      ) {
+        if (channel.readyState !== "open") {
+          throw new Error("Channel closed while sending file");
+        }
+
+        const chunkBuffer = await file
+          .slice(offset, offset + FILE_CHUNK_SIZE_BYTES)
+          .arrayBuffer();
+
+        const chunkPayload: FileChunkPayload = {
+          type: "file-chunk",
+          fileId,
+          chunkBase64: arrayBufferToBase64(chunkBuffer),
+        };
+
+        channel.send(JSON.stringify(chunkPayload));
+
+        if (channel.bufferedAmount > DATA_CHANNEL_BUFFER_LIMIT) {
+          await waitForDataChannelDrain(channel);
+        }
+      }
+
+      const endPayload: FileEndPayload = {
+        type: "file-end",
+        fileId,
+      };
+      channel.send(JSON.stringify(endPayload));
+
+      appendMessage(
+        localDisplayNameRef.current,
+        `Sent a file: ${file.name}`,
+        "local",
+        {
+          fileName: file.name,
+          fileSize: file.size,
+          fileUrl: URL.createObjectURL(file),
+          mimeType: file.type || "application/octet-stream",
+        }
+      );
+    } catch {
+      appendMessage("System", "Failed to send file.", "error");
+    } finally {
+      setIsSendingFile(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const handlePickFile = (): void => {
+    if (!isConnected || isSendingFile) {
+      return;
+    }
+
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = (event: ChangeEvent<HTMLInputElement>): void => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    void sendFile(file);
+  };
+
   const handleCopyRoom = async (): Promise<void> => {
     const roomId = activeRoom || roomInput.trim();
     if (!roomId) {
@@ -641,134 +793,53 @@ function App() {
         )}
 
         {!isImmersiveMode && (
-          <section className="chat-app__status status-panel">
-            <div className="status-panel__left">
-              <span className={statusDotClassName} aria-hidden="true" />
-              <span className="status-panel__label">{STATUS_LABELS[status]}</span>
-            </div>
-            <p className="status-panel__room">
-              {activeRoom ? `Room: ${activeRoom}` : "Room: not connected"}
-            </p>
-          </section>
+          <StatusPanel
+            statusLabel={STATUS_LABELS[status]}
+            statusDotClassName={statusDotClassName}
+            activeRoom={activeRoom}
+          />
         )}
 
         {!isImmersiveMode && (
-          <section className="chat-app__connect">
-            <form className="join-form" onSubmit={handleConnectSubmit}>
-              <label className="form-field" htmlFor="display-name">
-                <span className="form-field__label">Display Name (optional)</span>
-                <input
-                  id="display-name"
-                  className="form-field__input"
-                  value={displayNameInput}
-                  onChange={(event) => setDisplayNameInput(event.target.value)}
-                  placeholder={`Default: ${appConfig.defaultDisplayName}`}
-                  disabled={controlsLocked}
-                  maxLength={32}
-                />
-              </label>
-
-              <label className="form-field form-field--room" htmlFor="room-id">
-                <span className="form-field__label">Room ID</span>
-                <input
-                  id="room-id"
-                  className="form-field__input"
-                  value={roomInput}
-                  onChange={(event) => setRoomInput(event.target.value)}
-                  placeholder="Enter a room ID to join or create"
-                  disabled={controlsLocked}
-                  maxLength={64}
-                />
-              </label>
-
-              <div className="join-form__actions">
-                <button
-                  type="submit"
-                  className="button button--primary"
-                  disabled={controlsLocked}
-                >
-                  {status === "connecting" ? "Connecting..." : "Connect"}
-                </button>
-                <button
-                  type="button"
-                  className="button button--ghost"
-                  onClick={handleCopyRoom}
-                >
-                  {copyLabel}
-                </button>
-                <button
-                  type="button"
-                  className="button button--danger"
-                  onClick={handleDisconnect}
-                  disabled={!canDisconnect}
-                >
-                  Disconnect
-                </button>
-              </div>
-            </form>
-          </section>
+          <ConnectPanel
+            displayNameInput={displayNameInput}
+            roomInput={roomInput}
+            defaultDisplayName={appConfig.defaultDisplayName}
+            controlsLocked={controlsLocked}
+            copyLabel={copyLabel}
+            canDisconnect={canDisconnect}
+            status={status}
+            onDisplayNameChange={setDisplayNameInput}
+            onRoomChange={setRoomInput}
+            onSubmit={handleConnectSubmit}
+            onCopyRoom={handleCopyRoom}
+            onDisconnect={handleDisconnect}
+          />
         )}
 
-        <section
-          className={`chat-app__system system-log system-log--${systemNotice.type}`}
-          aria-live="polite"
-        >
-          <p className="system-log__label">System</p>
-          <p className="system-log__text">{systemNotice.text}</p>
-          <time className="system-log__time">{systemNotice.updatedAt}</time>
-        </section>
+        <SystemLogPanel notice={systemNotice} />
 
-        <section className="chat-app__messages messages" ref={messagesViewportRef}>
-          {messages.length === 0 && (
-            <p className="messages__empty">No chat messages yet.</p>
-          )}
-          {messages.map((message) => (
-            <article
-              key={message.id}
-              className={`chat-message chat-message--${message.type}`}
-            >
-              <p className="chat-message__sender">{message.sender}</p>
-              <p className="chat-message__text">{message.text}</p>
-              <time className="chat-message__time">{message.createdAt}</time>
-            </article>
-          ))}
-        </section>
+        <MessagesPanel messages={messages} viewportRef={messagesViewportRef} />
 
-        <form className="chat-app__composer composer" onSubmit={handleSendMessage}>
-          <input
-            className="composer__input"
-            value={messageInput}
-            onChange={(event) => setMessageInput(event.target.value)}
-            placeholder={
-              isConnected
-                ? `Message as ${localDisplayName}...`
-                : "Connect to a room before sending messages"
-            }
-            disabled={!isConnected}
-            maxLength={1024}
-          />
-          <div className="composer__actions">
-            <button
-              type="submit"
-              className="button button--accent composer__button"
-              disabled={!isConnected || messageInput.trim().length === 0}
-            >
-              Send
-            </button>
-            {isImmersiveMode && (
-              <button
-                type="button"
-                className="button button--danger composer__button"
-                onClick={handleDisconnect}
-              >
-                Disconnect
-              </button>
-            )}
-          </div>
-        </form>
+        <Composer
+          isConnected={isConnected}
+          isImmersiveMode={isImmersiveMode}
+          isSendingFile={isSendingFile}
+          messageInput={messageInput}
+          localDisplayName={localDisplayName}
+          fileInputRef={fileInputRef}
+          onMessageInputChange={setMessageInput}
+          onSubmit={handleSendMessage}
+          onPickFile={handlePickFile}
+          onFileInputChange={handleFileInputChange}
+          onDisconnect={handleDisconnect}
+        />
       </main>
     </div>
   );
 }
 
 export default App;
+
+
+

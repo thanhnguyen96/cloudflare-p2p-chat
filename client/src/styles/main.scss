@@ -350,6 +350,27 @@ body {
     color: rgba(226, 232, 240, 0.6);
   }
 
+  &__file {
+    margin-top: 0.48rem;
+    border: 1px solid rgba(148, 163, 184, 0.32);
+    border-radius: 10px;
+    background: rgba(15, 23, 42, 0.4);
+    padding: 0.48rem 0.56rem;
+  }
+
+  &__file-link {
+    color: #dbeafe;
+    font-weight: 700;
+    text-decoration: underline;
+    overflow-wrap: anywhere;
+  }
+
+  &__file-meta {
+    margin: 0.24rem 0 0;
+    font-size: 0.74rem;
+    color: rgba(226, 232, 240, 0.72);
+  }
+
   &--local {
     align-self: flex-end;
     background: var(--bubble-local);
@@ -416,6 +437,10 @@ body {
   &__actions {
     display: flex;
     gap: 0.55rem;
+  }
+
+  &__file-input {
+    display: none;
   }
 }
 

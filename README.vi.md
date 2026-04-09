@@ -10,6 +10,12 @@
 - Signaling: Cloudflare Worker + Durable Object
 - TURN: Cloudflare Realtime TURN API (backend cấp credential)
 
+## Tính Năng
+
+- Chat text thời gian thực 1-1 qua WebRTC data channel
+- Gửi file qua WebRTC data channel (tối đa `1 GB` mỗi file)
+- TURN credential TTL 1 giờ và tự động refresh
+
 ## Chạy Local Nhanh
 
 1. Cài dependencies.
@@ -120,3 +126,4 @@ Export trong shell/CI (không đặt trong `.env`):
 - TURN docs: <https://developers.cloudflare.com/realtime/turn/>
 - Tìm account ID: <https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
 - Tạo API token: <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/>
+

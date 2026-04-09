@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/config/appconfig.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/config/appconfig.ts","./src/features/chat/constants.ts","./src/features/chat/types.ts","./src/features/chat/utils.ts","./src/features/chat/components/composer.tsx","./src/features/chat/components/connectpanel.tsx","./src/features/chat/components/messagespanel.tsx","./src/features/chat/components/statuspanel.tsx","./src/features/chat/components/systemlogpanel.tsx"],"version":"5.9.3"}
