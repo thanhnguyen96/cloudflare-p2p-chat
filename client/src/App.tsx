@@ -12,6 +12,12 @@ interface ChatMessage {
   createdAt: string;
 }
 
+interface SystemNotice {
+  text: string;
+  type: "system" | "error";
+  updatedAt: string;
+}
+
 interface SignalingMessage {
   offer?: RTCSessionDescriptionInit;
   answer?: RTCSessionDescriptionInit;
@@ -35,14 +41,6 @@ const createMessageId = (): string => {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
-const createInitialMessage = (): ChatMessage => ({
-  id: createMessageId(),
-  sender: "System",
-  text: "Enter your room and connect to start chatting.",
-  type: "system",
-  createdAt: new Date().toLocaleTimeString(),
-});
-
 const parseChatPayload = (rawData: string): ChatPayload | null => {
   try {
     const parsed = JSON.parse(rawData) as Partial<ChatPayload>;
@@ -60,7 +58,6 @@ const parseChatPayload = (rawData: string): ChatPayload | null => {
 };
 
 function App() {
-  const initialSystemMessage = useMemo(() => createInitialMessage(), []);
   const [displayNameInput, setDisplayNameInput] = useState("");
   const [roomInput, setRoomInput] = useState("");
   const [messageInput, setMessageInput] = useState("");
@@ -69,7 +66,12 @@ function App() {
     appConfig.defaultDisplayName
   );
   const [status, setStatus] = useState<ConnectionStatus>("idle");
-  const [messages, setMessages] = useState<ChatMessage[]>([initialSystemMessage]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [systemNotice, setSystemNotice] = useState<SystemNotice>({
+    text: "Enter your room and connect to start chatting.",
+    type: "system",
+    updatedAt: new Date().toLocaleTimeString(),
+  });
   const [isConnected, setIsConnected] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy room ID");
 
@@ -81,7 +83,7 @@ function App() {
   const isResettingRef = useRef(false);
   const localDisplayNameRef = useRef(localDisplayName);
   const isConnectedRef = useRef(isConnected);
-  const systemMessageIdRef = useRef(initialSystemMessage.id);
+  const hasCustomDisplayNameRef = useRef(false);
 
   useEffect(() => {
     localDisplayNameRef.current = localDisplayName;
@@ -109,41 +111,20 @@ function App() {
     };
   }, []);
 
-  const upsertSystemMessage = (
+  const updateSystemNotice = (
     text: string,
     type: Extract<MessageType, "system" | "error"> = "system"
   ): void => {
-    setMessages((previous) => {
-      const existingIndex = previous.findIndex(
-        (message) => message.id === systemMessageIdRef.current
-      );
-
-      if (existingIndex >= 0) {
-        const nextMessages = [...previous];
-        nextMessages[existingIndex] = {
-          ...nextMessages[existingIndex],
-          text,
-          type,
-          createdAt: new Date().toLocaleTimeString(),
-        };
-        return nextMessages;
-      }
-
-      const systemMessage: ChatMessage = {
-        id: createMessageId(),
-        sender: "System",
-        text,
-        type,
-        createdAt: new Date().toLocaleTimeString(),
-      };
-      systemMessageIdRef.current = systemMessage.id;
-      return [...previous, systemMessage];
+    setSystemNotice({
+      text,
+      type,
+      updatedAt: new Date().toLocaleTimeString(),
     });
   };
 
   const appendMessage = (sender: string, text: string, type: MessageType): void => {
     if (type === "system" || type === "error") {
-      upsertSystemMessage(text, type);
+      updateSystemNotice(text, type);
       return;
     }
 
@@ -325,6 +306,10 @@ function App() {
         let peerConnection = peerConnectionRef.current;
 
         if (signalingMessage.type === "waiting") {
+          if (!hasCustomDisplayNameRef.current) {
+            setLocalDisplayName("Host");
+            localDisplayNameRef.current = "Host";
+          }
           setStatus("waiting");
           appendMessage("System", "Waiting for another user to join the room.", "system");
           return;
@@ -398,6 +383,7 @@ function App() {
 
     const resolvedDisplayName =
       displayNameInput.trim() || appConfig.defaultDisplayName;
+    hasCustomDisplayNameRef.current = displayNameInput.trim().length > 0;
 
     setLocalDisplayName(resolvedDisplayName);
     localDisplayNameRef.current = resolvedDisplayName;
@@ -408,15 +394,8 @@ function App() {
     setCopyLabel("Copy room ID");
     isCallerRef.current = false;
 
-    const connectingMessage: ChatMessage = {
-      id: createMessageId(),
-      sender: "System",
-      text: `Connecting to room ${roomId} as ${resolvedDisplayName}...`,
-      type: "system",
-      createdAt: new Date().toLocaleTimeString(),
-    };
-    systemMessageIdRef.current = connectingMessage.id;
-    setMessages([connectingMessage]);
+    setMessages([]);
+    updateSystemNotice(`Connecting to room ${roomId} as ${resolvedDisplayName}...`);
 
     connectToSignaling(roomId);
   };
@@ -550,7 +529,19 @@ function App() {
           </form>
         </section>
 
+        <section
+          className={`chat-app__system system-log system-log--${systemNotice.type}`}
+          aria-live="polite"
+        >
+          <p className="system-log__label">System</p>
+          <p className="system-log__text">{systemNotice.text}</p>
+          <time className="system-log__time">{systemNotice.updatedAt}</time>
+        </section>
+
         <section className="chat-app__messages messages" ref={messagesViewportRef}>
+          {messages.length === 0 && (
+            <p className="messages__empty">No chat messages yet.</p>
+          )}
           {messages.map((message) => (
             <article
               key={message.id}
