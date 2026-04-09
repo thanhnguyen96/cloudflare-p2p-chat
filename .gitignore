@@ -1,0 +1,27 @@
+﻿# Dependencies
+**/node_modules/
+
+# Build artifacts
+client/dist/
+signaling-server/dist/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Cloudflare local state
+.wrangler/
+signaling-server/.wrangler/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

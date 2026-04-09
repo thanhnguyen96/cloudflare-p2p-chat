@@ -1,0 +1,12 @@
+name = "webrtc-signaling-server"
+main = "src/worker.ts"
+compatibility_date = "2023-12-01"
+
+[durable_objects]
+bindings = [
+  { name = "SIGNALING_SERVER", class_name = "SignalingServer" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalingServer"]

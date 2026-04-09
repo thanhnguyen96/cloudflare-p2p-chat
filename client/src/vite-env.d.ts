@@ -1,0 +1,14 @@
+﻿/// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_SIGNALING_SERVER_URL?: string;
+  readonly VITE_DEFAULT_DISPLAY_NAME?: string;
+  readonly VITE_STUN_URL?: string;
+  readonly VITE_TURN_URLS?: string;
+  readonly VITE_TURN_USERNAME?: string;
+  readonly VITE_TURN_CREDENTIAL?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
