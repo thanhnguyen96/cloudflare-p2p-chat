@@ -80,6 +80,25 @@ npm run dev
 
 ### Signaling Worker
 
+Set required secrets first:
+
+```bash
+cd signaling-server
+npx wrangler secret put TURN_KEY_ID
+npx wrangler secret put TURN_API_TOKEN
+```
+
+`TURN_ALLOWED_ORIGINS` is configured in `signaling-server/wrangler.toml` under `[vars]`.
+
+If you previously created `TURN_ALLOWED_ORIGINS` as a secret, delete it once:
+
+```bash
+cd signaling-server
+npx wrangler secret delete TURN_ALLOWED_ORIGINS
+```
+
+Then deploy:
+
 ```bash
 cd signaling-server
 npm run deploy
@@ -102,6 +121,7 @@ Scripts:
 
 - `/.env`: frontend Vite variables only (`VITE_*`)
 - `/signaling-server/.dev.vars`: worker local variables only (`TURN_*`)
+- `/signaling-server/wrangler.toml` (`[vars]`): worker production non-secret vars (for example `TURN_ALLOWED_ORIGINS`)
 
 Do not put worker secrets in `.env`.
 

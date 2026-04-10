@@ -2,6 +2,9 @@ name = "webrtc-signaling-server"
 main = "src/worker.ts"
 compatibility_date = "2023-12-01"
 
+[vars]
+TURN_ALLOWED_ORIGINS = "https://p2p.thanhnguyen96.cyou,https://p2p-chat-awp.pages.dev,http://localhost:5173"
+
 [durable_objects]
 bindings = [
   { name = "SIGNALING_SERVER", class_name = "SignalingServer" }

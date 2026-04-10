@@ -1,10 +1,28 @@
 ﻿import type { Env } from "./types";
 
+const normalizeOrigin = (input: string): string | null => {
+  const candidate = input.trim();
+  if (!candidate) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return null;
+    }
+
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+};
+
 const parseCsv = (input: string | undefined): string[] =>
   (input ?? "")
     .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+    .map((item) => normalizeOrigin(item))
+    .filter((item): item is string => item !== null);
 
 export const resolveAllowedOrigin = (
   origin: string | null,
@@ -14,12 +32,17 @@ export const resolveAllowedOrigin = (
     return null;
   }
 
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (!normalizedOrigin) {
+    return null;
+  }
+
   const allowedOrigins = parseCsv(env.TURN_ALLOWED_ORIGINS);
   if (allowedOrigins.length === 0) {
     return null;
   }
 
-  return allowedOrigins.includes(origin) ? origin : null;
+  return allowedOrigins.includes(normalizedOrigin) ? normalizedOrigin : null;
 };
 
 const corsHeaders = (origin: string): Headers => {

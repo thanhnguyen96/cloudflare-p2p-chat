@@ -80,6 +80,25 @@ npm run dev
 
 ### Signaling Worker
 
+Set secret bắt buộc trước:
+
+```bash
+cd signaling-server
+npx wrangler secret put TURN_KEY_ID
+npx wrangler secret put TURN_API_TOKEN
+```
+
+`TURN_ALLOWED_ORIGINS` được cấu hình trong `signaling-server/wrangler.toml` tại `[vars]`.
+
+Nếu trước đây bạn đã tạo `TURN_ALLOWED_ORIGINS` bằng secret, xoá một lần:
+
+```bash
+cd signaling-server
+npx wrangler secret delete TURN_ALLOWED_ORIGINS
+```
+
+Sau đó deploy:
+
 ```bash
 cd signaling-server
 npm run deploy
@@ -102,6 +121,7 @@ Scripts:
 
 - `/.env`: chỉ cho frontend (`VITE_*`)
 - `/signaling-server/.dev.vars`: chỉ cho worker local (`TURN_*`)
+- `/signaling-server/wrangler.toml` (`[vars]`): biến production không nhạy cảm của worker (ví dụ `TURN_ALLOWED_ORIGINS`)
 
 Không đặt worker secrets trong `.env`.
 
